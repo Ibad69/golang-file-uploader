@@ -22,6 +22,7 @@ func main() {
 	})
 
 	http.HandleFunc("/file/", streamFileHandler)
+	http.HandleFunc("/streamfile/", chunkTransferEncoding)
 	fmt.Println("trying to run the server, possibly running")
 	err := http.ListenAndServe(":5300", nil)
 	if err != nil {
@@ -73,7 +74,6 @@ func uploadFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func streamFileHandler(w http.ResponseWriter, r *http.Request) {
-	// Get the file path from the request URL (e.g. /uploads/myfile.txt)
 	log.Println(r.URL.Path)
 	filePath := filepath.Join("./uploads", r.URL.Path[len("/file/"):])
 	log.Println(filePath)
@@ -86,15 +86,12 @@ func streamFileHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	// Get the file's stats to set proper headers
 	fileInfo, err := file.Stat()
 	if err != nil {
 		http.Error(w, "Unable to retrieve file info", http.StatusInternalServerError)
 		return
 	}
 
-	// Set the appropriate headers for inline display
-	// Dynamically set the Content-Type based on file extension, if needed
 	switch ext := filepath.Ext(fileInfo.Name()); ext {
 	case ".jpg", ".jpeg":
 		w.Header().Set("Content-Type", "image/jpeg")
@@ -108,7 +105,6 @@ func streamFileHandler(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
 	}
 
-	// Set Content-Disposition to inline so the file is displayed in the browser
 	w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%s", fileInfo.Name()))
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", fileInfo.Size()))
 
@@ -116,5 +112,57 @@ func streamFileHandler(w http.ResponseWriter, r *http.Request) {
 	_, err = io.Copy(w, file)
 	if err != nil {
 		http.Error(w, "Failed to send file", http.StatusInternalServerError)
+	}
+}
+
+func chunkTransferEncoding(w http.ResponseWriter, r *http.Request) {
+	log.Println(r.URL.Path)
+	filePath := filepath.Join("./uploads", r.URL.Path[len("/streamfile/"):])
+	log.Println(filePath)
+
+	file, err := os.Open(filePath)
+	if err != nil {
+		http.Error(w, "File not found", http.StatusNotFound)
+		return
+	}
+	defer file.Close()
+
+	switch ext := filepath.Ext(filePath); ext {
+	case ".jpg", ".jpeg":
+		w.Header().Set("Content-Type", "image/jpeg")
+	case ".mp4", ".mov":
+		w.Header().Set("Content-Type", "video/mp4")
+	case ".png":
+		w.Header().Set("Content-Type", "image/png")
+	case ".pdf":
+		w.Header().Set("Content-Type", "application/pdf")
+	default:
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
+
+	w.Header().
+		Set("Content-Disposition", fmt.Sprintf("inline; filename=%s", filepath.Base(filePath)))
+
+	// Enable chunked transfer encoding by not setting Content-Length
+	w.Header().Set("Transfer-Encoding", "chunked")
+
+	// Stream the file in chunks
+	buffer := make([]byte, 8*1024) // 8 KB buffer
+	for {
+		n, err := file.Read(buffer)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			http.Error(w, "Error reading file", http.StatusInternalServerError)
+			return
+		}
+		if n > 0 {
+			_, writeErr := w.Write(buffer[:n])
+			if writeErr != nil {
+				http.Error(w, "Error writing to response", http.StatusInternalServerError)
+				return
+			}
+		}
 	}
 }
