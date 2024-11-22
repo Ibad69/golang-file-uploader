@@ -116,10 +116,12 @@ func streamFileHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func chunkTransferEncoding(w http.ResponseWriter, r *http.Request) {
+	// Get the file path from the request URL
 	log.Println(r.URL.Path)
 	filePath := filepath.Join("./uploads", r.URL.Path[len("/streamfile/"):])
 	log.Println(filePath)
 
+	// Open the file for reading
 	file, err := os.Open(filePath)
 	if err != nil {
 		http.Error(w, "File not found", http.StatusNotFound)
@@ -127,6 +129,14 @@ func chunkTransferEncoding(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
+	// Get file info
+	fileInfo, err := file.Stat()
+	if err != nil {
+		http.Error(w, "Unable to retrieve file info", http.StatusInternalServerError)
+		return
+	}
+
+	// Set headers based on the file type
 	switch ext := filepath.Ext(filePath); ext {
 	case ".jpg", ".jpeg":
 		w.Header().Set("Content-Type", "image/jpeg")
@@ -140,22 +150,43 @@ func chunkTransferEncoding(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
 	}
 
-	w.Header().
-		Set("Content-Disposition", fmt.Sprintf("inline; filename=%s", filepath.Base(filePath)))
+	// Extract the "Range" header
+	rangeHeader := r.Header.Get("Range")
+	if rangeHeader == "" {
+		// No range header: serve the whole file
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", fileInfo.Size()))
+		w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%s", fileInfo.Name()))
+		http.ServeContent(w, r, fileInfo.Name(), fileInfo.ModTime(), file)
+		return
+	}
 
-	// Enable chunked transfer encoding by not setting Content-Length
-	w.Header().Set("Transfer-Encoding", "chunked")
+	// Parse the range header
+	start, end, err := parseRange(rangeHeader, fileInfo.Size())
+	if err != nil {
+		http.Error(w, "Invalid Range header", http.StatusRequestedRangeNotSatisfiable)
+		return
+	}
 
-	// Stream the file in chunks
+	// Set headers for partial content
+	w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%s", fileInfo.Name()))
+	w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, fileInfo.Size()))
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", end-start+1))
+	w.WriteHeader(http.StatusPartialContent)
+
+	// Seek to the start of the range
+	_, err = file.Seek(start, io.SeekStart)
+	if err != nil {
+		http.Error(w, "Error seeking file", http.StatusInternalServerError)
+		return
+	}
+
+	// Stream the requested range
 	buffer := make([]byte, 8*1024) // 8 KB buffer
-	for {
+	toRead := end - start + 1
+	for toRead > 0 {
 		n, err := file.Read(buffer)
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			http.Error(w, "Error reading file", http.StatusInternalServerError)
-			return
+		if n > int(toRead) {
+			n = int(toRead)
 		}
 		if n > 0 {
 			_, writeErr := w.Write(buffer[:n])
@@ -163,6 +194,35 @@ func chunkTransferEncoding(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "Error writing to response", http.StatusInternalServerError)
 				return
 			}
+			toRead -= int64(n)
+		}
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			http.Error(w, "Error reading file", http.StatusInternalServerError)
+			return
 		}
 	}
+}
+
+func parseRange(rangeHeader string, fileSize int64) (int64, int64, error) {
+	// Example: "Range: bytes=0-1024"
+	var start, end int64
+	_, err := fmt.Sscanf(rangeHeader, "bytes=%d-%d", &start, &end)
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid range format")
+	}
+
+	// Adjust end if not specified
+	if end == 0 || end >= fileSize {
+		end = fileSize - 1
+	}
+
+	// Validate range
+	if start > end || start < 0 || end >= fileSize {
+		return 0, 0, fmt.Errorf("invalid range values")
+	}
+
+	return start, end, nil
 }
