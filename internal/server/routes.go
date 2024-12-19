@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"encoding/json"
@@ -8,37 +8,76 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
+
+	"github.com/coder/websocket"
+	"github.com/go-chi/chi/v5"
+	chimiddleware "github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/cors"
 )
 
-func main() {
-	http.HandleFunc("/api/upload", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case "GET":
-			// handle GET request
-		case "POST":
-			uploadFile(w, r)
-		default:
-			http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
-		}
-	})
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case "GET":
-			// handle GET request
-		case "POST":
-			handleBenchmark(w, r)
-		default:
-			http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
-		}
-	})
+func (s *Server) RegisterRoutes() http.Handler {
+	r := chi.NewRouter()
+	r.Use(chimiddleware.Logger)
 
-	http.HandleFunc("/file/", streamFileHandler)
-	http.HandleFunc("/streamfile/", chunkTransferEncoding)
-	fmt.Println("trying to run the server, possibly running")
-	err := http.ListenAndServe(":5300", nil)
+	r.Use(cors.Handler(cors.Options{
+		AllowedOrigins:   []string{"https://*", "http://*"},
+		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
+		AllowCredentials: true,
+		MaxAge:           300,
+	}))
+	// r.Use(middleware.JwtAuthMiddleware)
+
+	// r.Get("/health", s.healthHandler)
+	r.Get("/websocket", s.websocketHandler)
+	r.Get("/file/{filename}", streamFileHandler)
+	r.Post("/api/upload", uploadFile)
+
+	return r
+}
+
+func (s *Server) HelloWorldHandler(w http.ResponseWriter, r *http.Request) {
+	resp := make(map[string]string)
+	resp["message"] = "Hello World"
+
+	// jsonResp, err := json.Marshal(resp)
+	// if err != nil {
+	// 	log.Fatalf("error handling JSON marshal. Err: %v", err)
+	// }
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).
+		Encode(map[string]interface{}{"success": "working"})
+}
+
+// func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
+// 	jsonResp, _ := json.Marshal(s.db.Health())
+// 	w.Header().Set("Content-Type", "application/json")
+// 	_, _ = w.Write(jsonResp)
+// }
+
+func (s *Server) websocketHandler(w http.ResponseWriter, r *http.Request) {
+	socket, err := websocket.Accept(w, r, nil)
 	if err != nil {
-		fmt.Println("error occured runnnig the server")
-		fmt.Println(err)
+		log.Printf("could not open websocket: %v", err)
+		_, _ = w.Write([]byte("could not open websocket"))
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	defer socket.Close(websocket.StatusGoingAway, "server closing websocket")
+
+	ctx := r.Context()
+	socketCtx := socket.CloseRead(ctx)
+
+	for {
+		payload := fmt.Sprintf("server timestamp: %d", time.Now().UnixNano())
+		err := socket.Write(socketCtx, websocket.MessageText, []byte(payload))
+		if err != nil {
+			break
+		}
+		time.Sleep(time.Second * 2)
 	}
 }
 
@@ -90,7 +129,8 @@ func uploadFile(w http.ResponseWriter, r *http.Request) {
 	// Respond to the client
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, `{"success": true, "filename": "%s", "size": %d}`, header.Filename, written)
+	fileurl := os.Getenv("SERVER_URL") + header.Filename
+	fmt.Fprintf(w, `{"success": true, "filename": "%s", "size": %d}`, fileurl, written)
 }
 
 func streamFileHandler(w http.ResponseWriter, r *http.Request) {
