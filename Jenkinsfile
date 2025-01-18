@@ -81,7 +81,7 @@ pipeline {
                         
                     go version;
 
-                    if [ ! -f 'main' ]; then
+                    if [ -f 'main' ]; then
                       echo "Removing main file...";
                       rm main;
                     else
