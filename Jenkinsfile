@@ -152,8 +152,10 @@ WantedBy=multi-user.target
                     
                     fi
 
+                    sudo -A systemctl restart ${SERVICE_NAME};
+
                     sudo -A systemctl status ${SERVICE_NAME};
-                    
+
                     """
                 }
             }
