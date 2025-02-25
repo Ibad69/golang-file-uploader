@@ -134,6 +134,7 @@ func uploadFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func streamFileHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 	log.Println(r.URL.Path)
 	filePath := filepath.Join("./uploads", r.URL.Path[len("/file/"):])
 	log.Println(filePath)
